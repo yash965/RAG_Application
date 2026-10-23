@@ -3,49 +3,55 @@ package com.RAG.rag_app.Service;
 import org.springframework.ai.embedding.EmbeddingModel;
 import org.springframework.stereotype.Service;
 
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
+import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 @Service
 public class InMemoryKnowledgeBase {
 
     private final EmbeddingModel embeddingModel;
-    List<DocumentChunk> chunks;
+    private final DocumentChunker documentChunker;
+    List<DocumentChunk> chunks = new CopyOnWriteArrayList<>();
 
-    public InMemoryKnowledgeBase (EmbeddingModel embeddingModel)
+    public InMemoryKnowledgeBase (EmbeddingModel embeddingModel, DocumentChunker documentChunker)
     {
         this.embeddingModel = embeddingModel;
-
-        List<DocumentSeed> seedChunks = List.of(
-                new DocumentSeed(
-                        "leave-policy",
-                        "Employees receive 20 days of annual leave each calendar year. " +
-                                "Leave requests must be approved by the employee's manager."
-                ),
-                new DocumentSeed(
-                        "remote-work-policy",
-                        "Employees may work remotely up to three days per week after " +
-                                "their manager approves the arrangement."
-                ),
-                new DocumentSeed(
-                        "expenses-policy",
-                        "Business travel expenses must be submitted within 30 days. " +
-                                "Receipts are required for all expenses above 25 dollars."
-                )
-        );
-
-        this.chunks = seedChunks.stream().map(seed -> new DocumentChunk(
-                seed.id, seed.content(), embeddingModel.embed(seed.content())
-        )).toList();
+        this.documentChunker = documentChunker;
     }
 
-    public SearchResult search(String question)
+    public DocumentIngestion indexDocument(String documentName, String content)
+    {
+        String documentId = UUID.randomUUID().toString();
+        List<String> textChunks = documentChunker.split(content);
+
+        List<DocumentChunk> newChunks = new ArrayList<>();
+        for(int i=0; i< textChunks.size(); i++)
+        {
+            String chunkText = textChunks.get(i);
+
+            newChunks.add(new DocumentChunk(documentId, documentName, i+1,
+                    chunkText, embeddingModel.embed(chunkText)));
+        }
+
+        chunks.addAll(newChunks);
+
+        return new DocumentIngestion(documentId, documentName, newChunks.size());
+    }
+
+    public List<SearchResult> search(String question, int limit)
     {
         float[] questionVector = embeddingModel.embed(question);
 
-        return chunks.stream().map(chunk ->
-                new SearchResult(chunk.id, chunk.content, cosineSimilarity(questionVector, chunk.embeddings)))
-                .max((left, right) -> Double.compare(left.similarity, right.similarity))
-                .orElseThrow();
+        return chunks.stream().
+                map(chunk -> new SearchResult(
+                        chunk.documentId, chunk.documentName, chunk.chunkNumber, chunk.content,
+                        cosineSimilarity(questionVector, chunk.embeddings)
+                )).sorted((a, b) -> Double.compare(b.similarity, a.similarity))
+                .limit(limit)
+                .toList();
     }
 
     private double cosineSimilarity(float[] first, float[] second)
@@ -71,12 +77,12 @@ public class InMemoryKnowledgeBase {
                 );
     }
 
-    private record DocumentSeed(String id, String content)
+    public record DocumentIngestion(String documentId, String documentName, int chunksCreated)
     {}
 
-    private record DocumentChunk(String id, String content, float[] embeddings)
+    private record DocumentChunk(String documentId, String documentName, int chunkNumber, String content, float[] embeddings)
     {}
 
-    public record SearchResult(String sourceId, String content, double similarity)
+    public record SearchResult(String documentId, String documentName, int chunkNumber, String content, double similarity)
     {}
 }

@@ -3,6 +3,9 @@ package com.RAG.rag_app.Service;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.stereotype.Service;
 
+import java.util.List;
+import java.util.stream.Collectors;
+
 @Service
 public class QuestionService {
 
@@ -17,7 +20,19 @@ public class QuestionService {
 
     public AnswerResponse answer(String question)
     {
-        InMemoryKnowledgeBase.SearchResult result = knowledgeBase.search(question);
+        List<InMemoryKnowledgeBase.SearchResult> results = knowledgeBase.search(question, 3);
+
+        if(results.isEmpty())
+        {
+            return new AnswerResponse("No documents have been uploaded yet", List.of());
+        }
+
+        String context = results.stream()
+                .map(result -> """
+                        source : %s (chunk %d)
+                        %s
+                        """.formatted(result.documentName(), result.chunkNumber(), result.content()))
+                .collect(Collectors.joining("\n---\n"));
 
         String prompt = """
         Answer the question using only the context below.
@@ -29,15 +44,25 @@ public class QuestionService {
 
         Question:
         %s
-        """.formatted(result.content(), question);
+        """.formatted(context, question);
 
         String answer = chatModel.call(prompt);
 
+        List<Source> sources = results.stream()
+                .map(searchResult ->
+                        new Source(searchResult.documentName(),
+                                searchResult.chunkNumber(),
+                                searchResult.similarity()))
+                .toList();
+
         return new AnswerResponse(
-                answer, result.sourceId(), result.similarity()
+                answer,sources
         );
     }
 
-    public record AnswerResponse(String answer, String question, double similarity)
+    public record AnswerResponse(String answer, List<Source> sources)
+    {}
+
+    public record Source(String documentName, int chunkNumber, double similarity)
     {}
 }
